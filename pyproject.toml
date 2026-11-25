@@ -1,0 +1,13 @@
+[project]
+name = "manifest-entity-resolution"
+version = "1.0.0"
+description = "Entity resolution for messy customer names in cargo manifests"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Victor Orebo" }]
+requires-python = ">=3.10"
+dependencies = ["openpyxl>=3.1", "rapidfuzz>=3.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
