@@ -1,0 +1,17 @@
+# outputs and memory produced when you run the tool
+*_clean.xlsx
+customer_master.csv
+review_new_names.csv
+~$*.xlsx
+
+# never commit real manifests
+real_data/
+*.xlsm
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.vscode/
+.idea/

@@ -1,0 +1,141 @@
+"""
+Benchmark the resolver against the synthetic ground truth.
+
+Metric: B-cubed precision / recall / F1 over rows - the standard measure for
+clustering-style entity resolution.
+  precision  of a row = share of its predicted group that truly is its customer
+             (low precision = different customers merged together)
+  recall     of a row = share of its true customer found in its predicted group
+             (low recall    = one customer split into several names)
+
+Compared with three common approaches:
+  exact match         group identical raw strings
+  normalized match    upper-case, strip punctuation and spaces
+  fuzzy match         normalized + greedy RapidFuzz token_set_ratio >= 85
+
+    python scripts/evaluate.py            print the table, write docs/benchmark.md
+    python scripts/evaluate.py --errors   also list the largest remaining mistakes
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import re
+import sys
+import time
+from collections import Counter, defaultdict
+
+from rapidfuzz import fuzz, process
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from manifest_er import basic, resolve  # noqa: E402
+
+
+def load_truth(path: str):
+    with open(path, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    return [r["raw_customer"] for r in rows], [r["true_entity"] for r in rows]
+
+
+def bcubed(pred: list, true: list):
+    n = len(pred)
+    n_pt = Counter(zip(pred, true))
+    n_p, n_t = Counter(pred), Counter(true)
+    p = sum(c * c / n_p[pp] for (pp, _), c in n_pt.items()) / n
+    r = sum(c * c / n_t[tt] for (_, tt), c in n_pt.items()) / n
+    return p, r, 2 * p * r / (p + r)
+
+
+# --------------------------------------------------------------------------- #
+#  Baselines
+# --------------------------------------------------------------------------- #
+def norm(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", " ", basic(s)).strip()
+
+
+def exact(raws):
+    return list(raws)
+
+
+def normalized(raws):
+    return [norm(r) for r in raws]
+
+
+def fuzzy(raws, threshold=85):
+    counts = Counter(norm(r) for r in raws)
+    leaders, cluster = [], {}
+    for s, _ in counts.most_common():
+        hit = process.extractOne(s, leaders, scorer=fuzz.token_set_ratio,
+                                 score_cutoff=threshold) if leaders else None
+        if hit:
+            cluster[s] = hit[0]
+        else:
+            leaders.append(s)
+            cluster[s] = s
+    return [cluster[norm(r)] for r in raws]
+
+
+def this_tool(raws):
+    std = resolve(raws)
+    return [std[r] for r in raws]
+
+
+# --------------------------------------------------------------------------- #
+def show_errors(raws, pred, true, top=12):
+    by_pred, by_true = defaultdict(Counter), defaultdict(Counter)
+    for r, p, t in zip(raws, pred, true):
+        by_pred[p][t] += 1
+        by_true[t][p] += 1
+    merges = sorted(((sum(c.values()) - c.most_common(1)[0][1], p, c) for p, c in by_pred.items()
+                     if len(c) > 1), key=lambda x: -x[0])
+    splits = sorted(((sum(c.values()) - c.most_common(1)[0][1], t, c) for t, c in by_true.items()
+                     if len(c) > 1), key=lambda x: -x[0])
+    print("\nWrong merges (standard name <- true customers):")
+    for n, p, c in merges[:top]:
+        print(f"  {n:5d} rows  {p}  <-  {dict(c.most_common(4))}")
+    print("\nSplits (true customer -> standard names):")
+    for n, t, c in splits[:top]:
+        print(f"  {n:5d} rows  {t}  ->  {dict(c.most_common(4))}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--truth", default=os.path.join(ROOT, "data", "ground_truth.csv"))
+    ap.add_argument("--errors", action="store_true")
+    args = ap.parse_args()
+
+    raws, true = load_truth(args.truth)
+    n_true = len(set(true))
+    results = []
+    for label, fn in [("Exact match", exact), ("Normalized match", normalized),
+                      ("Fuzzy match (token_set >= 85)", fuzzy), ("**manifest_er (this repo)**", this_tool)]:
+        t0 = time.time()
+        pred = fn(raws)
+        p, r, f = bcubed(pred, true)
+        results.append((label, len(set(pred)), p, r, f, time.time() - t0))
+        if args.errors and fn is this_tool:
+            show_errors(raws, pred, true)
+
+    lines = [
+        f"Synthetic benchmark: {len(raws):,} rows, {len(set(raws)):,} distinct raw spellings, "
+        f"{n_true} true customers.",
+        "",
+        "| Approach | Names produced | B-cubed precision | B-cubed recall | B-cubed F1 |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for label, k, p, r, f, _ in results:
+        lines.append(f"| {label} | {k:,} | {p:.3f} | {r:.3f} | {f:.3f} |")
+    table = "\n".join(lines)
+    print("\n" + table)
+
+    os.makedirs(os.path.join(ROOT, "docs"), exist_ok=True)
+    with open(os.path.join(ROOT, "docs", "benchmark.md"), "w", encoding="utf-8") as fh:
+        fh.write("# Benchmark\n\nGenerated by `python scripts/evaluate.py` "
+                 "(data: `python scripts/make_synthetic_data.py`).\n\n" + table + "\n")
+
+
+if __name__ == "__main__":
+    main()
