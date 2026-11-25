@@ -1,6 +1,6 @@
 # Customer Entity Resolution for Cargo Manifests
 
-![tests](https://github.com/GITHUB_USER/manifest-entity-resolution/actions/workflows/tests.yml/badge.svg)
+![tests](https://github.com/orebovictor-creator/manifest-entity-resolution/actions/workflows/tests.yml/badge.svg)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
