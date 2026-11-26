@@ -73,3 +73,31 @@ def test_unidentified_rows():
     out = resolve(["TO ORDER", "TO ORDER P.O BOX 5 KAMPALA", "ACME TRADING LTD"])
     assert out["TO ORDER"] == out["TO ORDER P.O BOX 5 KAMPALA"] == "UNIDENTIFIED (TO ORDER)"
     assert Counter(out.values())["ACME TRADING LTD"] == 1
+
+
+# --- regressions found by code review (v1.1) --------------------------------
+
+@pytest.mark.parametrize("names", [
+    ("JOHN OKELLO", "JOHN B OKELLO"),                      # extra initial = other person
+    ("A B C TRADING", "A B TRADING"),
+    ("GOLD RIVER LTD", "RIVER GOLD LTD"),                      # word order only for people
+    ("NORTH EAST LOGISTICS LTD",) * 3 + ("NORTH LOGISTICS LTD",),
+    ("GENERAL TRADING CO LTD",) * 5 + ("GENERAL TRADING AND CONTRACTING LTD",),
+    ("UNITED NATIONS",) * 5 + ("UNITED NATIONS ENVIRONMENT PROGRAMME",),
+    ("GULU SEED GROWERS CO LTD",) * 50 + ("GULU",),   # bare town
+])
+def test_review_regressions_keep_apart(names):
+    assert not same(*names)
+
+
+@pytest.mark.parametrize("names", [
+    ("MBALE CEMENT LTD",) * 9 + ("MBALE CEMENT INDUSTRIES LTD",),   # town + word is distinctive
+    ("GLOBAL FREIGHT LOGISTICS LTD",) * 9 + ("GLOBAL FREIGHT LOGISTICS JOINTLY",),
+    ("BANK OF UGANDA",) * 9 + ("BANK OF UGANDA 37-45",),
+    ("ZAWADI CONSTRUCTION ENGINEERING CO LTD", "ZAWADI CONSTRUCTION ENGINEERI NG CO"),
+    ("NURU CLEARING AND FORWARDING LTD", "NURU CLEARING ANDFORWARDING LTD"),
+    ("A TO Z HARDWARE LTD",) * 9 + ("A-Z HARDWARE", "ATOZ HARDWARE LTD"),
+    ("ACME TRADING CO (U) LTD",) * 9 + ("ACME TRADING COU LTD", "ACME TRADINGCOMPANY (U) LTD"),
+])
+def test_review_regressions_merge(names):
+    assert same(*names)

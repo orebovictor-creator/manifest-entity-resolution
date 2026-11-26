@@ -15,7 +15,9 @@ mess found in ~172k real spellings - with fictional customers:
   * agents                   FORWARDER X JOINTLY AND SEVERALLY WITH <customer>
   * no consignee             TO ORDER / TO ORDER P.O. BOX ...
   * look-alikes (traps)      SUNRISE vs SUNSET PLASTICS, GROUP 18 vs GROUP 21,
-                             PETER MUGISHA vs PETER MUSISI, BANK OF UGANDA vs TANZANIA
+                             PETER MUGISHA vs PETER MUSISI, BANK OF UGANDA vs TANZANIA,
+                             GOLD RIVER vs RIVER GOLD, NORTH EAST vs NORTH LOGISTICS,
+                             MAWE BUILDING MATERIALS vs MAWE <other business>
 
 Outputs
   data/sample_manifest.xlsx   manifest-style workbook (pivot block above the header)
@@ -61,6 +63,10 @@ TRAPS = [
     ("KAMBA COFFEE EXPORTERS", "", "LTD"), ("KAMBA TEA EXPORTERS", "", "LTD"),
     ("TWIGA FLOUR MILLERS", "", "LTD"),          # shares TWIGA with a generated company
     ("NOVA TRADING", "", "LTD"), ("NOVO TRADING", "", "LTD"),
+    # added after the v1.1 code review
+    ("MAWE BUILDING MATERIALS", "", "LTD"),      # shares MAWE with a generated company
+    ("NORTH EAST LOGISTICS", "", "LTD"), ("NORTH LOGISTICS", "", "LTD"),
+    ("GOLD RIVER", "", "LTD"), ("RIVER GOLD", "", "LTD"),
 ]
 PERSONS = ["PETER MUGISHA", "PETER MUSISI", "GRACE ATIENO", "JOSEPH OKELLO",
            "AISHA NAMUGGA", "DAVID SSEMPALA", "SARAH NAKATO", "MOSES WANYAMA"]

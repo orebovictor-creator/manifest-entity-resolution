@@ -1,6 +1,6 @@
 [project]
 name = "manifest-entity-resolution"
-version = "1.0.0"
+version = "1.1.0"
 description = "Entity resolution for messy customer names in cargo manifests"
 readme = "README.md"
 license = { text = "MIT" }

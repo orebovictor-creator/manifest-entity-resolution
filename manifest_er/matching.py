@@ -43,15 +43,25 @@ def match_key(name: str) -> str:
     'SUNRISE PLASTICS INDUSTRIES (U) LTD' -> 'SUNRISE PLASTICS INDUSTRIES'."""
     s = re.sub(r"[^A-Z0-9&() ]", " ", name)
     s = re.sub(r"[()]", " ", s.replace("(U)", " ").replace("(T)", " ").replace("(E)", " "))
+    s = re.sub(r"\bA Z\b", "A TO Z", s)        # "A-Z HARDWARE" = "A TO Z HARDWARE"
+    # a country glued to the word before it: "COUGANDA", "ENTERPRISESUGANDA"
+    s = re.sub(r"\b([A-Z]{2,})(" + "|".join(R.PLACE_LONG) + r")\b", r"\1 \2", s)
     toks = [t for t in s.split() if t not in R.NOISE_WORDS and not R.LEGAL_TYPO_RE.match(t)]
+    # "AND" glued to a generic word: "FORWARDING ANDCLEARING"
+    toks = [t[3:] if t.startswith("AND") and t[3:] in R.GENERIC_WORDS else t for t in toks]
 
     def in_initials(i):           # keep U / T / E inside initials: "L E M", "A T C"
         return len(toks[i - 1]) == 1 or (i + 1 < len(toks) and len(toks[i + 1]) == 1)
 
-    # place words are noise, except as first word or after OF/IN ("BANK OF UGANDA")
-    toks = [t for i, t in enumerate(toks)
-            if i == 0 or toks[i - 1] in ("OF", "IN") or not _is_place(t)
-            or (len(t) == 1 and in_initials(i))]
+    # Place words are noise only at the END of a name ("... PLASTICS UGANDA",
+    # "... U"). In the middle they are part of the name ("NORTH EAST LOGISTICS"),
+    # and they are kept as first word or after OF/IN ("BANK OF UGANDA").
+    while len(toks) > 1:
+        i = len(toks) - 1
+        t = toks[i]
+        if toks[i - 1] in ("OF", "IN") or not _is_place(t) or (len(t) == 1 and in_initials(i)):
+            break
+        toks.pop()
     return " ".join(toks) if toks else " ".join(s.split())
 
 
@@ -59,10 +69,30 @@ def squash(k: str) -> str:
     return k.replace(" ", "")
 
 
+def is_generic(key: str) -> bool:
+    """A short key (1-2 words) made only of generic business words:
+    'GENERAL TRADING', 'UNITED NATIONS'. Such a name does not identify one
+    customer, so it never absorbs longer names on its own."""
+    toks = key.split()
+    return len(toks) <= 2 and all(t in R.GENERIC_WORDS for t in toks)
+
+
+def _noise_extra(toks: list) -> bool:
+    """Extra words that add nothing: JOINTLY, GROUP, OFFICE, numbers, places."""
+    return all(t in R.EXTRA_NOISE or len(t) <= 2 or re.search(r"\d", t) or _is_place(t)
+               for t in toks)
+
+
+def person_like(name: str) -> bool:
+    """Could be a personal name: no legal suffix and no business word."""
+    return not R.HAS_LEGAL_RE.search(name) and \
+        not any(t in R.GENERIC_WORDS for t in re.findall(r"[A-Z]+", name))
+
+
 def word_order_key(k: str) -> str | None:
     """Sorted words of a 2-3 word key without digits: 'MUSISI PETER' and
-    'PETER MUSISI' -> 'MUSISI PETER'. Personal names are often written
-    surname-first; longer names (companies) are not reordered."""
+    'PETER MUSISI' -> 'MUSISI PETER'. Only used for personal names (see
+    person_like), which are often written surname-first."""
     toks = k.split()
     if 2 <= len(toks) <= 3 and all(len(t) >= 3 for t in toks) and not re.search(r"\d", k):
         return " ".join(sorted(toks))
@@ -72,14 +102,30 @@ def word_order_key(k: str) -> str | None:
 def typo_only(a: str, b: str) -> bool:
     """True when keys a and b differ only by typo-sized edits in each word.
     Blocks look-alikes such as SUNRISE TRADING / SUNSET TRADING,
-    PETER MUGISHA / PETER MUSISI or ROADTECH GROUP 18 / ROADTECH GROUP 21."""
+    PETER MUGISHA / PETER MUSISI, ROADTECH GROUP 18 / ROADTECH GROUP 21 and
+    JOHN OKELLO / JOHN B OKELLO."""
     if re.findall(r"\d+", a) != re.findall(r"\d+", b):
         return False
     ta, tb = a.split(), b.split()
+    if len(ta) == len(tb):
+        return _words_typo(ta, tb)
+    if abs(len(ta) - len(tb)) != 1:
+        return False
+    # one word written as two ("KAMBA COFFEE" / "KAMBACOFFEE" + a typo): join a
+    # neighbouring pair of real words and compare word by word. Initials are
+    # never joined, so an extra initial or word is a different name.
+    longer, shorter = (ta, tb) if len(ta) > len(tb) else (tb, ta)
+    for i in range(len(longer) - 1):
+        if len(longer[i]) >= 2 and len(longer[i + 1]) >= 2:
+            joined = longer[:i] + [longer[i] + longer[i + 1]] + longer[i + 2:]
+            if _words_typo(joined, shorter):
+                return True
+    return False
+
+
+def _words_typo(ta: list, tb: list) -> bool:
     if fuzz.ratio(ta[0], tb[0]) < 75:
         return False
-    if len(ta) != len(tb):            # missing / merged word: overall score decides
-        return True
     for x, y in zip(ta, tb):
         if x == y:
             continue
@@ -117,7 +163,7 @@ class Grouper:
             return
         self.token_idx[key] = std
         self.leader_squash.setdefault(squash(key), std)
-        ok = word_order_key(key)
+        ok = word_order_key(key) if person_like(std) else None
         if ok and ok not in self.order_idx:
             self.order_idx[ok] = std
             self.order_blocks[ok[:1]].append(ok)
@@ -135,7 +181,7 @@ class Grouper:
         self.leader_of_key.setdefault(key, std)
         self.squash_idx.setdefault(squash(key), std)
 
-    def find(self, key: str):
+    def find(self, key: str, cleaned: str | None = None):
         """Return (standard name, score) or (None, 0)."""
         if key in self.leader_of_key:
             return self.leader_of_key[key], 100
@@ -143,19 +189,21 @@ class Grouper:
         if sq in self.squash_idx:
             return self.squash_idx[sq], 99
         toks = key.split()
-        # longer version of a known name (also with different spacing)
+        # longer version of a known name (also with different spacing); a
+        # generic name ("GENERAL TRADING") never absorbs longer names
         for n in range(len(toks) - 1, 1, -1):
             p = " ".join(toks[:n])
-            if len(p) >= 10:
+            if len(p) >= 10 and (not is_generic(p) or _noise_extra(toks[n:])):
                 if p in self.token_idx:
                     return self.token_idx[p], 95
                 if squash(p) in self.leader_squash:
                     return self.leader_squash[squash(p)], 94
         # cut-off version of a known name
-        if len(key) >= 12 and key in self.prefix_idx:
+        if len(key) >= 12 and key in self.prefix_idx and not is_generic(key):
             return self.prefix_idx[key], 95
-        # same 2-3 words in another order (+ a typo): MUSISI PETER = PETER MUSISI
-        ok = word_order_key(key)
+        # same 2-3 words in another order (+ a typo): MUSISI PETER = PETER MUSISI,
+        # for personal names only (GOLD RIVER LTD and RIVER GOLD LTD stay apart)
+        ok = word_order_key(key) if person_like(cleaned or key) else None
         if ok:
             if ok in self.order_idx:
                 return self.order_idx[ok], 93
@@ -181,7 +229,7 @@ class Grouper:
             self.add_leader(cleaned, key)
             self.leader_of_key[key] = cleaned
             return cleaned, 100
-        std, score = self.find(key)
+        std, score = self.find(key, cleaned)
         if std is None:
             self.add_leader(cleaned, key)
             return cleaned, 100
@@ -246,7 +294,9 @@ def family_merges(vol: Counter, keep: set) -> dict:
             if long_[:len(short)] != short:
                 continue
             if len(short) == 1 and (len(short[0]) < 4 or short[0] in R.COMMON_WORDS):
-                continue
+                continue                             # bare "ANKOLE", "GULU", "GLOBAL"
+            if is_generic(" ".join(short)) and not _noise_extra(long_[len(short):]):
+                continue                             # GLOBAL, UNITED NATIONS ...
             if any(re.search(r"\d", w) for w in long_[len(short):]):
                 continue
             out[s] = dom

@@ -23,11 +23,19 @@ def basic(s) -> str:
 
 def _strip_leading(s: str) -> str:
     """Remove labels / titles in front of the name, repeatedly:
-    'CONSIGNEE: M/S. MR JOHN DOE' -> 'JOHN DOE'."""
+    'CONSIGNEE: M/S. MR JOHN DOE' -> 'JOHN DOE'. A title in front of a
+    company name with a legal suffix is part of the name: 'MR PRICE LTD'."""
     for _ in range(10):
         before = s
         s = re.sub(r"^[^A-Z]+", "", s)                  # must start with a letter
         s = R.LEAD_RE.sub("", s, count=1)
+        m = R.TITLE_RE.match(s)
+        if m:
+            rest = s[m.end():]
+            lg = R.LEGAL_RAW_RE.search(rest)
+            # "MR PRICE LTD": a one- or two-word company named with a title
+            if not (lg and len(re.findall(r"[A-Z]+", rest[:lg.start()])) <= 2):
+                s = rest
         if s == before:
             break
     return s
@@ -46,16 +54,23 @@ def _drop_repeat(s: str) -> str:
     return s
 
 
-def _fix_suffixes(s: str) -> str:
+FIELD_CUT = 60      # raw values this long may have been cut by the ~70-char field
+
+
+def _fix_suffixes(s: str, raw_len: int) -> str:
     # legal words glued to neighbours: COLTD, ACMELIMITED, LTDPLOT, ACME-SMC
     s = re.sub(r"\bCO\.?LTD\b", "CO LTD", s)
-    s = re.sub(r"([A-Z]{3,})(LIMITED|LTD)\b", r"\1 \2", s)
+    s = re.sub(r"([A-Z]{3,})(LIMITED|LTD|COMPANY)\b", r"\1 \2", s)
     s = re.sub(r"\b(LIMITED|LTD)(ADD\w*|PLOT\w*|P\.?\s*O\b|TIN\w*|TEL\w*|HOUSE\w*|[A-Z]{3,})",
                r"\1 \2", s)
     s = re.sub(r"(?:\s*-\s*|(?<=[A-Z]{3}))SMC\b", " SMC", s)
     s = re.sub(r"\bL\s+TD\b|\bL\.\s*T\.\s*D\b", "LTD", s)
-    # legal word cut off at the end of the ~70-character field
-    s = re.sub(r"\s(?:L|LT|LI|LIM|LIMI|LIMIT|LIMITE|LTDA)$", " LTD", s)
+    # legal word cut off at the end of the ~70-character field. LIMI/LIMIT/
+    # LIMITE are never names; L/LT/LI/LIM can be ("ZHANG LI", "TAN LIM"), so
+    # those are only repaired when the raw value was long enough to be cut.
+    s = re.sub(r"\s(?:LIMI|LIMIT|LIMITE|LTDA)$", " LTD", s)
+    if raw_len >= FIELD_CUT:
+        s = re.sub(r"\s(?:L|LT|LI|LIM)$", " LTD", s)
     for rx, rep in R.SUFFIX_FIX:
         s = rx.sub(rep, s)
     return re.sub(r"\s+", " ", s)
@@ -65,15 +80,17 @@ def _cut_address(s: str) -> str:
     m = R.LEGAL_RE.search(s)
     if m and m.start() >= 2:
         # a legal suffix ends the name (this keeps town words that belong to
-        # the name: "NAIROBI ENTERPRISES (U) LTD")
+        # the name: "MOMBASA SAFARI WEAR (U) LTD")
         end = m.end()
         chain = R.LEGAL_CHAIN_RE.match(s[end:])
         if chain:
             end += chain.end()
         s = s[:end]
-        # ...unless a real address marker comes BEFORE it ("ACME P.O BOX 1 LTD")
-        a = R.ADDR_RE.search(s)
-        if a and a.start() >= 3 and not R.TOWN_IN_NAME_RE.search(a.group()):
+        # ...unless a definite address marker comes BEFORE it ("ACME P.O BOX 1 LTD").
+        # Ordinary words never cut here: "ACME BUILDING MATERIALS LTD",
+        # "LION PLAZA LTD", "MOMBASA SAFARI WEAR (U) LTD" stay whole.
+        a = R.HARD_ADDR_RE.search(s)
+        if a and a.start() >= 3:
             s = s[:a.start()]
     else:
         cuts = [x.start() for x in (R.ADDR_RE.search(s), R.SOFT_RE.search(s))
@@ -94,8 +111,8 @@ def _tidy(s: str) -> str:
         if not R.KEEP_PLACE_RE.search(t.strip()) and len(t.strip()) >= 2:
             s = t
         s = re.sub(r"[\s\-.,&(/]+$", "", s)
-        if not s.endswith(" & CO"):
-            s = re.sub(r"\s+(?:CO|AND|OF|THE|AT|IN|FOR)$", "", s)
+        # dangling connector words left by a cut; CO is kept ("SMITH AND CO")
+        s = re.sub(r"\s+(?:AND|OF|THE|AT|IN|FOR)$", "", s)
     s = re.sub(r"\(\s*$", "", s).strip()
     s = _strip_leading(s)
     if s.count("(") > s.count(")"):
@@ -108,6 +125,9 @@ def clean_name(raw) -> str:
     if raw is None:
         return ""
     s = basic(raw)
+    # "TO THE ORDER OFSTANDARD BANK ..." (missing space after OF)
+    # ("ORDER OFFICE NO. 358 ..." is an address, not "OF" + "FICE")
+    s = re.sub(r"^(?:TO\s+)?(?:THE\s+)?ORDER\s+OF(?!F)(?=[A-Z]{3})", "", s)
 
     # "FORWARDER X JOINTLY AND SEVERALLY WITH ACME LTD" -> the customer is ACME LTD
     m = None
@@ -133,7 +153,7 @@ def clean_name(raw) -> str:
 
     s = _drop_repeat(s)
     s = R.BRANCH_RE.sub(" ", s).strip()
-    s = _fix_suffixes(s)
+    s = _fix_suffixes(s, len(basic(raw)))
     s = _cut_address(s)
     s = _tidy(s)
 

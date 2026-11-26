@@ -2,6 +2,7 @@ import os
 import sys
 
 import openpyxl
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
@@ -49,3 +50,42 @@ def test_benchmark_quality_does_not_regress():
     raws, true = evaluate.load_truth(truth)
     p, r, f = evaluate.bcubed(evaluate.this_tool(raws), true)
     assert p >= 0.98 and r >= 0.95 and f >= 0.97
+
+
+def _sheet(path, rows):
+    wb = openpyxl.Workbook()
+    for r in rows:
+        wb.active.append(r)
+    wb.save(path)
+
+
+def test_header_skips_title_rows_and_code_columns(tmp_path):
+    from manifest_er.excel import find_header
+    rows = [["Customer manifest June 2024"], [],
+            ["BL", "Customer Code", "Customer Name", "TEUs"],
+            ["BL1", "C001", "ACME TRADING LTD", 1]]
+    assert find_header(rows) == (2, 2)
+
+
+def test_failed_file_is_not_remembered(tmp_path):
+    src = tmp_path / "m.xlsx"
+    _sheet(src, [["BL", "Customer:"], ["BL1", "ACME TRADING LTD"]])
+    blocked = tmp_path / "out_is_a_folder"
+    blocked.mkdir()
+    master = {}
+    try:
+        clean_workbook(str(src), master, output=str(blocked), log=lambda *_: None)
+    except Exception:
+        pass
+    else:
+        raise AssertionError("saving onto a folder should fail")
+    assert master == {}          # its spellings stay new, so they will be reviewed
+
+
+def test_known_spellings_are_counted(tmp_path):
+    src = tmp_path / "m.xlsx"
+    _sheet(src, [["BL", "Customer:"]] + [["BL1", "ACME TRADING LTD"]] * 3)
+    master = {}
+    clean_workbook(str(src), master, log=lambda *_: None)
+    clean_workbook(str(src), master, log=lambda *_: None)
+    assert int(master["ACME TRADING LTD"]["occurrences"]) == 6

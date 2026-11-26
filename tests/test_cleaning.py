@@ -17,7 +17,7 @@ from manifest_er.rules import UNIDENTIFIED  # noqa: F401  (documented constant)
     ("NYOTA PHARMA TEL: +256 772 123456", "NYOTA PHARMA"),
     ("NYOTA PHARMA KAMPALA, UGANDA", "NYOTA PHARMA"),
     # town that belongs to the name is kept when a legal suffix follows
-    ("NAIROBI ENTERPRISES (U) LTD", "NAIROBI ENTERPRISES (U) LTD"),
+    ("MOMBASA SAFARI WEAR (U) LTD", "MOMBASA SAFARI WEAR (U) LTD"),
     # prefixes and titles
     ("M/S. MAWE FOAM INDUSTRIES LTD", "MAWE FOAM INDUSTRIES LTD"),
     ("CONSIGNEE: MAWE FOAM INDUSTRIES LTD", "MAWE FOAM INDUSTRIES LTD"),
@@ -66,3 +66,45 @@ def test_same_match_key(a, b):
 ])
 def test_different_match_key(a, b):
     assert match_key(clean_name(a)) != match_key(clean_name(b))
+
+
+# --- regressions found by code review (v1.1) --------------------------------
+
+@pytest.mark.parametrize("raw, expected", [
+    # ordinary words are part of a company name before its legal suffix
+    ("ACME BUILDING MATERIALS LTD", "ACME BUILDING MATERIALS LTD"),
+    ("CITY MARKET TRADERS LTD", "CITY MARKET TRADERS LTD"),
+    ("SMART MOBILE LTD", "SMART MOBILE LTD"),
+    ("LION PLAZA LIMITED. PLOT 130-134, KIBULI", "LION PLAZA LTD"),
+    # ...but a definite address marker before the suffix still cuts
+    ("ACME TRADING P.O. BOX 77 KAMPALA LTD", "ACME TRADING"),
+    # without a suffix, an address word cuts unless a business word follows
+    ("ACME TRADING JINJA ROAD", "ACME TRADING"),
+    ("ACME BUILDING MATERIALS P.O BOX 4", "ACME BUILDING MATERIALS"),
+    ("ACME TRADING CO OFFICE 101 SALAM BUILDING", "ACME TRADING CO"),
+    # short personal names are not turned into companies
+    ("ZHANG LI", "ZHANG LI"),
+    ("TAN LIM", "TAN LIM"),
+    # ...while a long value cut at the field limit is repaired
+    ("SUNRISE PLASTICS INDUSTRIES AND GENERAL MERCHANDISE TRADING COMPANY LI",
+     "SUNRISE PLASTICS INDUSTRIES AND GENERAL MERCHANDISE TRADING CO LTD"),
+    # real parts of names are kept
+    ("SMITH AND CO", "SMITH AND CO"),
+    ("MR PRICE LTD", "MR PRICE LTD"),
+    ("MR. AISHA NAMUGGA HOLDINGS AND TRADING LTD", "AISHA NAMUGGA HOLDINGS AND TRADING LTD"),
+    # glued "ORDER OF" vs the word OFFICE
+    ("TO THE ORDER OFSTANDARD BANK (U) LTD", "STANDARD BANK (U) LTD"),
+    ("TO ORDER OFFICE NO. 358 KATOR ROAD JUBA", ""),
+])
+def test_review_regressions_cleaning(raw, expected):
+    assert clean_name(raw) == expected
+
+
+def test_place_word_inside_a_name_is_kept():
+    assert match_key(clean_name("NORTH EAST LOGISTICS LTD")) != \
+        match_key(clean_name("NORTH LOGISTICS LTD"))
+
+
+def test_country_glued_to_previous_word_is_noise():
+    assert match_key(clean_name("PAMOJA CEMENT COUGANDA LTD")) == \
+        match_key(clean_name("PAMOJA CEMENT CO UGANDA LTD"))

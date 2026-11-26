@@ -58,12 +58,17 @@ LEADING_JUNK = [
     r"IMPORTER\s*NAME", r"EXPORTER\s*NAME", r"FULL\s*NAME", r"NAME", r"KIND\s+ATTN",
     r"CONSIGNEE", r"CONSIGNE", r"CNEE", r"NOTIFY\s*PARTY", r"NOTIFY", r"SHIPPER",
     r"EXPORTER", r"IMPORTER", r"BUYER", r"CUSTOMER", r"RECEIVER", r"ATTN",
-    r"ATTENTION", r"TO", r"MESSRS", r"MESSERS", r"M\s*/\s*S", r"MRS", r"MR", r"MS",
-    r"MISS", r"MADAM", r"MDM", r"DR", r"DOCTOR", r"ENGR", r"ENG", r"PROF", r"HON",
-    r"REV", r"SIR", r"SHEIKH", r"SHK", r"HAJJI", r"HAJI", r"HAJAT", r"CAPT", r"THE",
+    r"ATTENTION", r"TO", r"MESSRS", r"MESSERS", r"M\s*/\s*S", r"MS", r"THE",
     r"MANAGER", r"M\s+S(?=\s+[A-Z]{3})",
 ]
 LEAD_RE = re.compile(r"^(?:" + "|".join(LEADING_JUNK) + r")(?:\s*[.:;,\-/]+\s*|\s+)")
+
+# Personal titles. Removed only when the rest is NOT a company with a legal
+# suffix, so "MR PRICE LTD" / "DR BEAUTY LTD" keep their names.
+TITLES = [r"MRS", r"MR", r"MISS", r"MADAM", r"MDM", r"DR", r"DOCTOR", r"ENGR", r"ENG",
+          r"PROF", r"HON", r"REV", r"SIR", r"SHEIKH", r"SHK", r"HAJJI", r"HAJI", r"HAJAT",
+          r"CAPT"]
+TITLE_RE = re.compile(r"^(?:" + "|".join(TITLES) + r")(?:\s*[.:;,\-/]+\s*|\s+)")
 
 # "FORWARDER X JOINTLY AND SEVERALLY WITH Y" / "X ON BEHALF OF Y": the customer is Y
 BEHALF_RE = re.compile(
@@ -99,31 +104,59 @@ LEGAL_RAW_RE = re.compile(r"\b(?:LTD|LIMITED|LIMI\w*|LIM|PLC|LLC|INC|SMC|SARL|SP
                           r"GMBH|PVT)\b")
 HAS_LEGAL_RE = re.compile(r"\b(?:LTD|PLC|LLC|INC|GMBH|SARL|SPRL|CORP|PTE|PVT|SMC|LLP|SA)\b")
 
-# Where an address / contact tail starts
-ADDRESS_MARKERS = [
-    r"P\s*\.?\s*O\s*\.?\s*B(?:OX)?\b", r"\bPOB\b", r"\bP\s*\.?\s*B\.?\s*\d", r"\bBOX\b",
-    r"\bB\.?P\.?\s*\d", r"\bPRIVATE\s+BAG\b", r"\bPLOT\b", r"\bPLT\b",
-    r"\bTEL\b", r"\bTEL\s*[:.]", r"\bTELEPHONE\b", r"\bPHONE\b", r"\bMOB(?:ILE)?\b",
-    r"\bCELL\b", r"\bFAX\b", r"\bTIN\b", r"\bTIN\s*[:.]", r"\bVAT\b", r"\bVRN\b",
-    r"\bE-?MAIL\b", r"\bADD(?:RESS|R)?\b", r"\bFULL\s+ADDRESS\b", r"\bSTREET\b",
+# Where an address / contact tail starts. Three kinds:
+#
+# HARD markers can only be an address or contact detail. They also cut a name
+# that has a legal suffix after them ("ACME P.O BOX 1 LTD" -> "ACME").
+HARD_ADDRESS_MARKERS = [
+    r"P\s*\.?\s*O\s*\.?\s*B(?:OX)?\b", r"\bPOB\b", r"\bP\s*\.?\s*B\.?\s*\d",
+    r"\bBOX\s*(?:NO\.?\s*)?\d", r"\bB\.?P\.?\s*\d", r"\bPRIVATE\s+BAG\b", r"\bPLOT\b",
+    r"\bPLT\b", r"\bTEL\b", r"\bTEL\s*[:.]", r"\bTELEPHONE\b", r"\bFAX\b", r"\bTIN\b",
+    r"\bTIN\s*[:.]", r"\bVAT\b", r"\bVRN\b", r"\bE-?MAIL\b", r"\bADD(?:RESS|R)?\b",
+    r"\bFULL\s+ADDRESS\b", r"\bHOUSE\s+NO\b", r"\bC\s*/\s*O\b", r"\bBKG\b", r"\bBOOKING\b",
+    r"\bSEE\s+ABOVE\b", r"\bADRESS\b", r"\bDUMMY\b", r"\b\w*\d{5,}", r"-\s*[A-Z]{2,5}\d",
+    r"\bSHOP\s*(?:NO|\d)", r"\bT/A\b", r"\bT\s+A\b", r"\bP\.?O\.?\s*\d",
+    r"\bREG(?:ISTRA\w*)?\b\s*NO", r"\bNO\s*[.:]?\s*\d", r"#\s*\d",
+    r"\b\d+\s*(?:ST|ND|RD|TH)\b", r"\+\s*\d", r"\b\d{4,}\b", r"@", r"\bWWW\.", r"\bTIN\d",
+    r"\b(?:OFFICE|SUITE|ROOM|FLAT|APARTMENT)\s*(?:NO\.?\s*)?\d",
+]
+HARD_ADDR_RE = re.compile("|".join(HARD_ADDRESS_MARKERS))
+
+# WORD markers are ordinary words that usually start an address ("... JINJA
+# ROAD", "... KIKUUBO MARKET") but can also be part of a name ("ACME BUILDING
+# MATERIALS", "CITY MARKET TRADERS", "HELLO MOBILE PHONES"). They are only used
+# for names WITHOUT a legal suffix, and never when a business word follows.
+BUSINESS_NEXT = (
+    r"(?:MATERIALS?|CONTRACTORS?|CONSTRUCTION|SOLUTIONS?|SUPPL(?:Y|IES|IERS)|SYSTEMS?|"
+    r"SERVICES?|TRAD(?:E|ERS|ING)|ENTERPRISES?|DEALERS?|CENT(?:RE|ER)S?|WORKS|"
+    r"INDUSTR(?:Y|IES)|HARDWARE|PHONES?|ACCESSORIES|MONEY|NETWORKS?|TECHNOLOG(?:Y|IES)|"
+    r"ELECTRONICS|MART|STORES?|SHOP|SALES|PRODUCTS|LOGISTICS|HOLDINGS|INVESTMENTS?|"
+    r"PROPERTIES|DEVELOPERS?|AGENC(?:Y|IES)|COMPANY|CO|LTD|LIMITED|SMC|GROUP|MANAGEMENT|"
+    r"CONSULT\w*|ENGINEERING|MACHINERY|EQUIPMENT|TRANSPORT\w*|FREIGHT|FOODS?|FASHIONS?|"
+    r"TEXTILES?|PHARMA\w*|CLINIC|HOSPITAL|SCHOOL|ACADEMY|HOTEL|RESTAURANT|BAKERY|"
+    r"SUPERMARKET|MASTERS?|MAKERS?|AUTO\w*|MOTORS?|DESIGNS?|FURNITURE|PLASTICS?|"
+    r"&|AND|\(U\)|\(T\)|\(E\)|U|UGANDA|TANZANIA|KENYA|EAST)")
+WORD_ADDRESS_MARKERS = [
+    r"\bMOB(?:ILE)?\b", r"\bCELL\b", r"\bPHONE\b", r"\bCONTACT\b", r"\bSTREET\b",
     r"\bROAD\b", r"\bRD\b", r"\bAVENUE\b", r"\bAVE\b", r"\bFLOOR\b", r"\bBUILDING\b",
-    r"\bHOUSE\s+NO\b", r"\bKEBELE\b", r"\bWOREDA\b", r"\bSUB\s*CITY\b", r"\bZONE\b",
-    r"\bINDUSTRIAL\s+AREA\b", r"\bC\s*/\s*O\b", r"\bCONTACT\b", r"\bOPPOSITE\b",
-    r"\bOPP\b", r"\bNEAR\b", r"\bVILLAGE\b", r"\bWARD\b", r"\bDISTRICT\b",
-    r"\bDIVISION\b", r"\bMUNICIPALITY\b", r"\bTOWN\s+COUNCIL\b", r"\bBLOCK\b",
-    r"\bBKG\b", r"\bBOOKING\b", r"\bSEE\s+ABOVE\b", r"\bADRESS\b", r"\bLOCATION\b",
-    r"\bDUMMY\b", r"\b\w*\d{5,}", r"-\s*[A-Z]{2,5}\d",
-    r"\bLOCATED\b", r"\bMARKET\b", r"\bMALL\b", r"\bARCADE\b", r"\bPLAZA\b",
-    r"\bEMPORIUM\b", r"\bSHOP\s*(?:NO|\d)", r"\bNEXT\s+TO\b", r"\bPARISH\b", r"\bHIGHWAY\b",
-    r"\bLANE\b", r"\bT/A\b", r"\bT\s+A\b", r"\bP\.?O\.?\s*\d",
+    r"\bKEBELE\b", r"\bWOREDA\b", r"\bSUB\s*CITY\b", r"\bZONE\b", r"\bINDUSTRIAL\s+AREA\b",
+    r"\bOPPOSITE\b", r"\bOPP\b", r"\bNEAR\b", r"\bVILLAGE\b", r"\bWARD\b", r"\bDISTRICT\b",
+    r"\bDIVISION\b", r"\bMUNICIPALITY\b", r"\bTOWN\s+COUNCIL\b", r"\bBLOCK\b", r"\bBOX\b",
+    r"\bLOCATION\b", r"\bLOCATED\b", r"(?<!SUPER )\bMARKET\b", r"\bMALL\b", r"\bARCADE\b",
+    r"\bPLAZA\b", r"\bEMPORIUM\b", r"\bNEXT\s+TO\b", r"\bPARISH\b", r"\bHIGHWAY\b",
+    r"\bLANE\b",
+]
+WORD_ADDR_RE = re.compile(r"(?:" + "|".join(WORD_ADDRESS_MARKERS) + r")"
+                          r"(?!\s+" + BUSINESS_NEXT + r"(?![A-Z]))")
+
+# PLACE markers: towns and areas that start an address tail (names without a
+# legal suffix only, so "MOMBASA SAFARI WEAR (U) LTD" keeps its town).
+PLACE_MARKERS = [
     r"\bNAKASERO\b", r"\bNAKIVUBO\b", r"\bKISENYI\b", r"\bMENGO\b", r"\bKATWE\b",
     r"\bNATETE\b", r"\bOWINO\b", r"\bLUZIRA\b", r"\bKAWEMPE\b", r"\bMAKINDYE\b",
     r"\bRUBAGA\b", r"\bBWAISE\b", r"\bKAFUMBE\b", r"\bKIKUUBO\b", r"\bKARIAKOO\b",
     r"\bKINONDONI\b", r"\bILALA\b", r"\bTEMEKE\b", r"\bBOLE\b", r"\bMERKATO\b",
-    r"\bTONG\s*PI?NG\b", r"\bMUNUKI\b", r"\bKONYO\s*KONYO\b", r"\bREG(?:ISTRA\w*)?\b\s*NO",
-    r"\bNO\s*[.:]?\s*\d", r"#\s*\d", r"\b\d+\s*(?:ST|ND|RD|TH)\b", r"\+\s*\d",
-    r"\b\d{4,}\b", r"@", r"\bWWW\.", r"\bTIN\d",
-    # towns / areas that start an address tail
+    r"\bTONG\s*PI?NG\b", r"\bMUNUKI\b", r"\bKONYO\s*KONYO\b",
     r"\bKAMPALA\b", r"\bENTEBBE\b", r"\bJINJA\b", r"\bJINJIA\b", r"\bMBARARA\b",
     r"\bGULU\b", r"\bMUKONO\b", r"\bWAKISO\b", r"\bNAMANVE\b", r"\bKOLOLO\b",
     r"\bNTINDA\b", r"\bNAKAWA\b", r"\bBUGOLOBI\b", r"\bNAGURU\b", r"\bKYADONDO\b",
@@ -133,11 +166,10 @@ ADDRESS_MARKERS = [
     r"\bMOSHI\b", r"\bDODOMA\b", r"\bADDIS\b", r"\bMOMBASA\b", r"\bNAIROBI\b",
     r"\bREPUBLIC\s+OF\b", r"\bUNITED\s+REPUBLIC\b",
 ]
-ADDR_RE = re.compile("|".join(ADDRESS_MARKERS))
-# towns that may legitimately appear INSIDE a company name before its suffix
-# ("NAIROBI ENTERPRISES (U) LTD")
-TOWN_IN_NAME_RE = re.compile(r"\b(KAMPALA|NAIROBI|JUBA|ARUSHA|ADDIS|MOMBASA|JINJA|MUKONO|"
-                             r"MASAKA|MBALE|GULU|LIRA|HOIMA|DSM|KASESE)\b")
+PLACE_ADDR_RE = re.compile("|".join(PLACE_MARKERS))
+# any address marker (names without a legal suffix, "TO ORDER ..." values)
+ADDR_RE = re.compile("|".join([HARD_ADDR_RE.pattern, WORD_ADDR_RE.pattern,
+                               PLACE_ADDR_RE.pattern]))
 
 # Building / area words. Only applied to names WITHOUT a legal suffix,
 # so "TWIN TOWERS LTD" stays intact while "ACME HOLDINGS TWIN TOWERS" is cut.
@@ -157,7 +189,7 @@ ADDR_START_RE = re.compile(r"^(?:P\s*\.?\s*O\b|BOX\b|PLOT\b|PLT\b|TEL\b|ADD(?:RE
 TRAILING_PLACE = re.compile(
     r"(?:\s+(?:UGANDA|UGAND|UGAN|UGNDA|UGANADA|TANZANIA|TANZANI|TANZAN|ETHIOPIA|ETHIOPI|"
     r"SOUTH\s+SUDAN|SOUTH|SUDAN|KENYA|RWANDA|BURUNDI|KAMPALA|JUBA|ARUSHA|ADDIS\s+ABABA|"
-    r"U|T|E|EAST\s+AFRICA|EA|E\.A))+\s*$"
+    r"U|T|EAST\s+AFRICA|EA|E\.A))+\s*$"
 )
 # ...but keep it when the place IS the name: "BANK OF UGANDA", "EMBASSY OF INDIA"
 KEEP_PLACE_RE = re.compile(r"(?:^|\s)(?:OF|FOR|IN|DE|DU|BANK|EMBASSY|GOVERNMENT|REPUBLIC)$")
@@ -176,7 +208,7 @@ NOISE_WORDS = {"LTD", "CO", "PLC", "SMC", "INC", "LLC", "CORP", "GMBH", "SARL",
                "PVT", "PTE", "PTY", "THE", "&", "AND", "(U)", "(T)", "(E)"}
 # misspelt legal words: LIMIITED, COLTD, CORPORATON ...
 LEGAL_TYPO_RE = re.compile(r"^(?:CO)?LI?M+I*U?T*E*D+[A-Z]?$|^IMITED$|^COLTD$|^LTD[A-Z]{0,2}$|"
-                           r"^COMPANY?$|^CORPN?$|^CORPORA\w*$|^COPRO\w*$|^LIMI\w*$")
+                           r"^COMPANY?$|^CORPN?$|^CORPORA\w*$|^COPRO\w*$|^LIMI\w*$|^CO[UT]$")
 # country words are ignored only when they are NOT the first word, so
 # "UGANDA GLASSWORKS" and "TANZANIA GLASSWORKS" stay different
 PLACE_WORDS = {"UGANDA", "TANZANIA", "ETHIOPIA", "SOUTH", "SUDAN", "EAST", "AFRICA",
@@ -200,3 +232,32 @@ COMMON_WORDS = {
     "DUBAI", "BEIJING", "SHANGHAI", "TRADING", "TRADERS", "INVESTMENTS", "ENTERPRISES",
     "SOLUTIONS", "SUPPLIES", "SERVICES", "MOTORS", "AUTO", "FAMILY", "BROTHERS", "SONS",
 }
+
+# Words that describe a business without identifying one. A name made ONLY of
+# these ("GENERAL TRADING", "UNITED NATIONS", "GLOBAL LOGISTICS") never absorbs
+# longer names, and is never treated as a reversed personal name.
+# towns and regions: generic alone ("GULU"), but distinctive with another word
+# ("MBALE CEMENT", "ARUA FISH TRADERS")
+TOWN_WORDS = {"GULU", "JUBA", "KAMPALA", "JINJA", "MBALE", "MBARARA", "ARUA", "LIRA",
+              "MASAKA", "HOIMA", "KASESE", "TORORO", "ENTEBBE", "ANKOLE", "BUSOGA", "KIGEZI",
+              "ELGON", "RWENZORI", "NAIROBI", "MOMBASA", "DUBAI", "BEIJING", "SHANGHAI",
+              "NILE", "VICTORIA"}
+GENERIC_WORDS = (COMMON_WORDS - TOWN_WORDS) | {
+    "GENERAL", "TRADE", "TRADING", "TRADERS", "INVESTMENT", "INVESTMENTS", "ENTERPRISES",
+    "SUPPLIES", "SUPPLIERS", "SERVICES", "SOLUTIONS", "INTERNATIONAL", "GROUP", "HOLDINGS",
+    "LOGISTICS", "CONSTRUCTION", "CONTRACTORS", "CONTRACTING", "ENGINEERING", "INDUSTRIES",
+    "INDUSTRY", "MOTORS", "AUTO", "IMPORT", "EXPORT", "IMPORTERS", "EXPORTERS", "NATIONS",
+    "NATION", "AGENCIES", "AGENCY", "DEVELOPMENT", "COMPANY", "CORPORATION", "BANK",
+    "MINISTRY", "MISSION", "OF", "AND", "&", "FOR", "IN", "THE", "OIL", "ENERGY", "PETROLEUM",
+    "FOODS", "FOOD", "PRODUCTS", "MANUFACTURING", "MANUFACTURERS", "MILLS", "MILLERS",
+    "HARDWARE", "ELECTRONICS", "PHARMACY", "PHARMA", "STORES", "STORE", "SHOP", "CENTRE",
+    "CENTER", "MARKET", "PLAZA", "MALL", "TRANSPORT", "TRANSPORTERS", "FREIGHT", "CARGO",
+    "CLEARING", "FORWARDING", "FORWARDERS", "PLASTICS", "TEXTILES", "STEEL", "CEMENT",
+    "COFFEE", "TEA", "SUGAR", "BEVERAGES", "BUILDING", "MATERIALS", "TECHNOLOGIES",
+    "TECHNOLOGY", "SYSTEMS", "NETWORKS", "PROPERTIES", "ESTATES", "AGRO", "FARM", "FARMS",
+}
+
+# words that add nothing to a name when they follow it: "GLOBAL FREIGHT LOGISTICS
+# JOINTLY ...", "ACME GROUP", "ACME HEAD OFFICE"
+EXTRA_NOISE = {"JOINTLY", "SEVERALLY", "WITH", "ON", "BEHALF", "FOR", "OF", "AND", "&", "THE",
+               "GROUP", "OFFICE", "BRANCH", "HEAD", "HQ", "MAIN", "UNIT", "DEPT", "DEPARTMENT"}

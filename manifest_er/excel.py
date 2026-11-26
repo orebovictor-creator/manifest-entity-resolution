@@ -11,6 +11,7 @@ added. The original file is never modified.
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -35,18 +36,39 @@ class Result:
     seconds: float
 
 
+# columns that start with CUSTOMER/CONSIGNEE but do not hold the name
+_NOT_NAME_COL = re.compile(r"\b(?:ID|CODE|NO|NUMBER|NUM|TYPE|TIN|ACCOUNT|ACC|REF|COUNTRY|"
+                           r"ADDRESS|PHONE|TEL|EMAIL|CATEGORY|GROUP)\b")
+
+
 def find_header(rows: list, wanted: str | None = None):
-    """(header row index, customer column index) or (None, None)."""
+    """(header row index, customer column index) or (None, None).
+
+    A header row has at least two text cells; a title or note above the table
+    ("Customer manifest June 2024") is skipped. Within the row, a column
+    named like "Customer Name" wins over "Customer Code" / "Customer ID"."""
     for i, row in enumerate(rows[:HEADER_SCAN_ROWS]):
-        for j, c in enumerate(row):
-            if not isinstance(c, str):
-                continue
-            h = c.strip().upper()
-            if wanted:
+        texts = [(j, c.strip().upper()) for j, c in enumerate(row)
+                 if isinstance(c, str) and c.strip()]
+        if wanted:
+            for j, h in texts:
                 if h == wanted.strip().upper():
                     return i, j
-            elif h.startswith("CUSTOMER") or h.startswith("CONSIGNEE"):
-                return i, j
+            continue
+        if len(texts) < 2:
+            continue
+        cands = []
+        for j, h in texts:
+            if not (h.startswith("CUSTOMER") or h.startswith("CONSIGNEE")):
+                continue
+            words = re.sub(r"[^A-Z ]", " ", h).split()
+            if _NOT_NAME_COL.search(" ".join(words)):
+                continue
+            if "NAME" in words or len(words) <= 3:         # a title has more words
+                cands.append((j, "NAME" in words))
+        if cands:
+            named = [j for j, has_name in cands if has_name]
+            return i, (named or [cands[0][0]])[0]
     return None, None
 
 
@@ -77,8 +99,27 @@ def clean_workbook(path: str, master: dict, column: str | None = None,
                          "(use --column to give the header)")
 
     new_raw = standardize(raw_counts, master, count_known=False)
-    std_of = {r: master[r]["standard_name"] for r in raw_counts}
+    try:
+        out = _write(path, output, sheets, layout, master, raw_counts)
+    except BaseException:
+        # nothing from a file that was not written is remembered, so its new
+        # spellings will be new (and reviewed) again on the next attempt
+        for r in new_raw:
+            master.pop(r, None)
+        raise
+    # the file is written: count every known spelling it contained, so the
+    # volumes used for leader order and family merges stay current
+    new_set = set(new_raw)
+    for r, n in raw_counts.items():
+        if r not in new_set:
+            master[r]["occurrences"] = int(master[r].get("occurrences") or 0) + n
+    return Result(out, sum(raw_counts.values()), len(raw_counts),
+                  len({master[r]["standard_name"] for r in raw_counts}), new_raw,
+                  time.time() - t0)
 
+
+def _write(path, output, sheets, layout, master, raw_counts) -> str:
+    std_of = {r: master[r]["standard_name"] for r in raw_counts}
     out = output or os.path.splitext(path)[0] + "_clean.xlsx"
     wb = openpyxl.Workbook(write_only=True)
     summary = defaultdict(lambda: [0, set()])
@@ -109,10 +150,15 @@ def clean_workbook(path: str, master: dict, column: str | None = None,
     ws.append(["Standard Customer", "Rows", "Different spellings"])
     for name, (n, spell) in sorted(summary.items(), key=lambda x: (-x[1][0], x[0])):
         ws.append([name, n, len(spell)])
+    # write next to the target first, then move it into place: a failure (file
+    # open in Excel, disk full) never leaves a half-written output behind
+    tmp = out + ".tmp"
+    wb.save(tmp)
     try:
-        wb.save(out)
-    except PermissionError:
-        raise PermissionError(f"cannot write {out} - is it open in Excel?") from None
-
-    return Result(out, sum(raw_counts.values()), len(raw_counts), len(summary),
-                  new_raw, time.time() - t0)
+        os.replace(tmp, out)
+    except OSError as e:
+        os.remove(tmp)
+        if isinstance(e, PermissionError):
+            raise PermissionError(f"cannot write {out} - is it open in Excel?") from None
+        raise
+    return out
